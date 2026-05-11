@@ -216,7 +216,30 @@ Every agent turn carries a `source: "llm" | "template"` field on `Turn` (see [`a
 
 The API echoes `source` in `CreateConvOut` and `MessageOut`. The Chainlit UI uses it to set the message author — **`Template`** vs **`Assistant`** — so testers can see at a glance when a deterministic fallback fires. Recorded in the candidate JSON output as well, which makes it easy to compute LLM-vs-template coverage across conversations.
 
-### 4.8 Language switching (bidirectional)
+### 4.8 Candidate Q&A from the JD (injection-resistant)
+
+Each user message is classified by the extraction LLM. If it contains a question about the role (pay, perks, schedule, vehicle requirements, etc.), the verbatim question text is stashed in `state.metadata["user_question"]`. `render_node` then makes a second LLM call to `_answer_from_jd(question, language)` in [`api/nodes.py`](../api/nodes.py), which:
+
+1. Loads JD body + a curated subset of frontmatter (compensation, perks, requirements, service_areas, employment_types, shifts). Operational fields like `contact`, `agent_version_compat`, and `job_id` are **excluded** from the prompt.
+2. Wraps the candidate's question in `<<<CANDIDATE_QUESTION>>>...<<<END_CANDIDATE_QUESTION>>>` delimiters and runs it through `QA_SYSTEM` in [`api/prompts.py`](../api/prompts.py). The system prompt explicitly forbids: following user instructions, revealing the system prompt, role changes, and answering from anything outside the JD.
+3. If the answer is outside the JD or the response trips `looks_like_refusal()`, falls back to a literal `QA_FALLBACK` message ("No tengo esa información — un reclutador podrá ayudarte.").
+
+The answer is prepended to the next stage question so the agent answers AND continues the interview in one message. `user_question` is cleared from metadata afterwards so the next turn doesn't re-answer.
+
+### 4.9 Inactivity simulation + nudge-then-abandon flow
+
+`state.metadata["inactivity_nudges"]` is a small counter that drives a two-strike flow:
+
+- **Strike 0 → 1 (nudge).** First inactivity event on an in-progress conversation appends a deterministic Turn whose text is `INACTIVITY_NUDGE_PREFIX[lang] + STAGE_QUESTIONS[(stage, lang)]` — e.g. *"Hola, ¿sigues ahí? Quería preguntarte: ¿En qué ciudad vives actualmente?"*. The sweeper's per-conversation idle timer is reset via `touch()`, so a real candidate gets another full `INACTIVITY_TIMEOUT_SECONDS` to reply.
+- **Strike 1 → terminate.** Second inactivity event transitions to `ABANDONED` and runs `terminate_node` directly (bypassing the graph entry point so `route_node` doesn't un-abandon us). The closing message comes from `TERMINAL_MESSAGES[("abandoned", lang)]`, the candidate JSON is written to `data/candidates/abandoned/`, and the sweeper forgets the conversation.
+
+The counter resets to `0` whenever the candidate sends a real message (`extract_node` always sets `inactivity_nudges = 0`), so replying after a nudge gives them a fresh budget.
+
+The same code path serves two callers:
+- `POST /conversations/{id}/inactivity` — invoked by the Chainlit **User inactivity** button (`cl.Action` attached to every in-progress agent message). Pure simulation, no real timer involved.
+- The background `start_sweeper()` task in [`api/inactivity.py`](../api/inactivity.py) — invoked on real `INACTIVITY_TIMEOUT_SECONDS` expiry. Calls `_finalize_abandoned`, which delegates to the same `handle_inactivity_event` function. Production and simulation behaviour stay identical.
+
+### 4.10 Language switching (bidirectional)
 
 Per the approved process design: every user turn is classified for language; the next agent reply is rendered in whichever language the user just used; no acknowledgement, no lock. Implementation:
 

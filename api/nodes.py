@@ -28,7 +28,10 @@ from .models import (
 )
 from .prompts import (
     EXTRACTION_SYSTEM,
+    INACTIVITY_NUDGE_PREFIX,
     OTHER_LANGUAGE_NUDGE,
+    QA_FALLBACK,
+    QA_SYSTEM,
     RENDER_SYSTEM,
     STAGE_QUESTIONS,
     TERMINAL_MESSAGES,
@@ -38,6 +41,7 @@ from .storage import append_log, append_notification, write_candidate
 
 
 _jd: Optional[JD] = None
+_jd_context_cached: Optional[str] = None
 
 
 def get_jd() -> JD:
@@ -45,6 +49,86 @@ def get_jd() -> JD:
     if _jd is None:
         _jd = load_jd(settings.jd_path)
     return _jd
+
+
+def _build_jd_context() -> str:
+    """Build the candidate-facing JD text used for Q&A.
+
+    Includes user-safe fields only: role title, employment types, shifts,
+    service areas, compensation, perks, requirements, and the body. Excludes
+    operational metadata (contact, agent_version_compat, job_id).
+    """
+    global _jd_context_cached
+    if _jd_context_cached is not None:
+        return _jd_context_cached
+    jd = get_jd()
+    parts: list[str] = [
+        f"Role: {jd.title} at {jd.company}",
+        f"Employment types: {', '.join(jd.employment_types)}",
+        f"Shifts: {', '.join(jd.shifts)}",
+    ]
+    if jd.compensation:
+        for region, comp in jd.compensation.items():
+            lo, hi = (comp.get("hourly_range") or [None, None])[:2]
+            cur = comp.get("currency", "")
+            note = comp.get("notes", "")
+            parts.append(f"Compensation ({region}): {lo}-{hi} {cur}/hour. {note}".strip())
+    if jd.service_areas:
+        parts.append("Service areas:")
+        for region, cities in jd.service_areas.items():
+            parts.append(f"  {region}: {', '.join(cities)}")
+    if jd.perks:
+        parts.append("Perks: " + "; ".join(jd.perks))
+    if jd.requirements:
+        parts.append("Requirements: " + "; ".join(jd.requirements))
+    if jd.body:
+        parts.append("")
+        parts.append("--- DESCRIPTION ---")
+        parts.append(jd.body)
+    _jd_context_cached = "\n".join(parts)
+    return _jd_context_cached
+
+
+def build_nudge_text(state: ConversationState) -> str:
+    """Compose the 'are you still there?' inactivity nudge for the current stage.
+
+    Uses the deterministic STAGE_QUESTIONS template prefixed with the
+    language-appropriate "are you still there?" line. If the stage doesn't have
+    a template (e.g. brand-new conversation still on GREETING) we default to
+    asking the name — that's the natural first ask.
+    """
+    lang = state.language if state.language in ("es", "en") else "es"
+    prefix = INACTIVITY_NUDGE_PREFIX[lang]
+    stage = state.current_stage.value
+    question = STAGE_QUESTIONS.get((stage, lang)) or STAGE_QUESTIONS[("ask_name", lang)]
+    return f"{prefix}{question}"
+
+
+def _answer_from_jd(question: str, language: str, conversation_id: str) -> str:
+    """Answer a candidate's question strictly from the JD. Injection-resistant."""
+    lang = language if language in ("es", "en") else "es"
+    prompt = QA_SYSTEM.format(
+        language=lang,
+        jd_text=_build_jd_context(),
+        question=question,
+    )
+    text = ""
+    try:
+        resp = get_llm(temperature=0).invoke([SystemMessage(content=prompt)])
+        text = (resp.content if isinstance(resp.content, str) else str(resp.content)).strip().strip('"')
+    except Exception as e:  # noqa: BLE001
+        append_log(conversation_id, {"event": "qa_error", "error": str(e)})
+
+    if looks_like_refusal(text):
+        text = QA_FALLBACK.get(lang, QA_FALLBACK["en"])
+
+    append_log(conversation_id, {
+        "event": "qa_answered",
+        "language": lang,
+        "question": question[:200],
+        "answer": text[:500],
+    })
+    return text
 
 
 # --------------------------------------------------------------------------------------
@@ -58,7 +142,12 @@ def extract_node(state: ConversationState) -> dict:
         # First turn — no user message yet. Nothing to extract.
         return {}
 
+    # A real user message arrived → reset the inactivity-nudge counter regardless
+    # of what extraction returns. The candidate is clearly still engaged.
+    base_meta = {**state.metadata, "inactivity_nudges": 0}
+
     llm = get_llm(temperature=0)
+    raw = ""
     try:
         resp = llm.invoke([
             SystemMessage(content=EXTRACTION_SYSTEM),
@@ -68,11 +157,11 @@ def extract_node(state: ConversationState) -> dict:
         data = _safe_json(raw)
     except Exception as e:  # noqa: BLE001 — log and continue with empty extraction
         append_log(state.conversation_id, {"event": "extract_error", "error": str(e)})
-        return {}
+        return {"metadata": base_meta}
 
     if not data:
         append_log(state.conversation_id, {"event": "extract_parse_error", "raw": raw[:500]})
-        return {}
+        return {"metadata": base_meta}
 
     # Merge new field values into the existing CandidateRecord.
     candidate = state.candidate.model_dump()
@@ -91,20 +180,28 @@ def extract_node(state: ConversationState) -> dict:
     if transcript and transcript[-1].role == "user" and sentiment in {"positive", "neutral", "frustrated", "confused"}:
         transcript[-1].sentiment = sentiment
 
+    # Capture a candidate-asked question (if any) for the QA path in render_node.
+    raw_question = data.get("user_question")
+    user_question = raw_question.strip() if isinstance(raw_question, str) and raw_question.strip() else None
+
     append_log(state.conversation_id, {
         "event": "extract",
         "language": language,
         "sentiment": sentiment,
         "fields": data.get("fields"),
         "raw_language": new_language,
+        "user_question": user_question,
     })
 
     return {
         "candidate": CandidateRecord(**candidate),
         "language": language,
         "transcript": transcript,
-        # Stash a flag so route_node knows whether the user spoke an unsupported language.
-        "metadata": {**state.metadata, "last_extract_language": new_language or state.language},
+        "metadata": {
+            **base_meta,
+            "last_extract_language": new_language or state.language,
+            "user_question": user_question,
+        },
     }
 
 
@@ -207,6 +304,13 @@ def render_node(state: ConversationState) -> dict:
         )
         return _append_agent(state, text, source="template")
 
+    # If the candidate's last message contained a question about the role,
+    # answer it (strictly from the JD) before asking the next stage question.
+    qa_answer = ""
+    user_question = state.metadata.get("user_question")
+    if user_question:
+        qa_answer = _answer_from_jd(user_question, state.language, state.conversation_id)
+
     # Standard render: ask the question for the current stage in the current language.
     llm = get_llm(temperature=0.4)
     reask_count = state.reask_counts.get(state.current_stage.value, 0)
@@ -245,7 +349,16 @@ def render_node(state: ConversationState) -> dict:
             text = "Disculpa, ¿podrías repetir? / Sorry, could you repeat?"
             source = "template"
 
-    return _append_agent(state, text, source=source)
+    # Combine: Q&A answer first, then the next stage question.
+    if qa_answer:
+        text = f"{qa_answer}\n\n{text}"
+        # source stays whatever the next-question path produced; the QA call
+        # itself is an LLM call, so source="llm" is also accurate here.
+        if source == "template":
+            source = "llm"
+
+    # Clear the question from metadata so the next turn doesn't re-answer it.
+    return _append_agent(state, text, source=source, metadata={"user_question": None})
 
 
 # --------------------------------------------------------------------------------------
@@ -315,10 +428,18 @@ def _latest_user_text(state: ConversationState) -> Optional[str]:
     return None
 
 
-def _append_agent(state: ConversationState, text: str, source: str = "llm") -> dict:
+def _append_agent(
+    state: ConversationState,
+    text: str,
+    source: str = "llm",
+    metadata: Optional[dict] = None,
+) -> dict:
     transcript = [t.model_copy() for t in state.transcript]
     transcript.append(Turn(role="agent", text=text, source=source))
-    return {"transcript": transcript}
+    update: dict = {"transcript": transcript}
+    if metadata is not None:
+        update["metadata"] = {**state.metadata, **metadata}
+    return update
 
 
 def _safe_json(raw: str) -> dict:
