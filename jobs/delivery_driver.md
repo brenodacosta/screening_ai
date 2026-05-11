@@ -1,7 +1,7 @@
 ---
 job_id: delivery_driver
 title: Delivery Driver
-company: TastyExpress
+company: Grupos Sazón
 employment_types: [full_time, part_time, weekends]
 shifts: [morning, afternoon, evening]
 languages_supported: [es, en]
@@ -80,13 +80,13 @@ requirements:
   - "18 years or older"
   - "Right to work in Spain or Mexico (we verify documents at onboarding, not before)"
 
-contact: hiring@tastyexpress.example
+contact: hiring@gruposazon.example
 agent_version_compat: "0.1.x"
 ---
 
-# Delivery Driver — TastyExpress
+# Delivery Driver — Grupos Sazón
 
-TastyExpress is a restaurant chain operating across 45 cities in Spain and Mexico. We're hiring delivery drivers to bring food from our kitchens to our customers — directly, with no third-party platform in between.
+Grupos Sazón is a restaurant chain operating across 45 cities in Spain and Mexico. We're hiring delivery drivers to bring food from our kitchens to our customers — directly, with no third-party platform in between.
 
 ## Role
 

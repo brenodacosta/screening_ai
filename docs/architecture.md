@@ -41,7 +41,7 @@ flowchart LR
 | Chat UI | **Chainlit** | Already chosen. Gives us a messaging-style UI for free; built-in sessions, message history, typing indicator. |
 | Backend API | **FastAPI** + **Uvicorn** | Async, lightweight, easy to wrap LangGraph calls; good OpenAPI for future messaging-adapter integration. |
 | Agent / flow | **LangGraph** | Already chosen. Native state, checkpointing, conditional edges fit the stage-based flow from the process design. |
-| LLM client | **`langchain-openai`** `ChatOpenAI` pointed at an OpenAI-compatible endpoint via `base_url` + `api_key`. Default target: **GitHub Models** (`https://models.github.ai/inference`). Swappable to Gemini / Groq / Ollama / OpenRouter with zero code changes — only env vars. | Simple HTTP client, no provider-specific runtime. The earlier Copilot-SDK pivot was reverted after intermittent persona-override failures; GitHub Models accepts the same PAT once the `Models` permission is granted. |
+| LLM client | **`langchain-openai`** `ChatOpenAI` pointed at an OpenAI-compatible endpoint via `base_url` + `api_key`. Default target: **Google Gemini 2.0 Flash** (`https://generativelanguage.googleapis.com/v1beta/openai/`). Swappable to GitHub Models / Groq / Ollama / OpenRouter with zero code changes — only env vars. | Simple HTTP client, no provider-specific runtime. Free tier covers prototype usage (1,500 req/day). Earlier attempts with Copilot SDK and GitHub Models direct failed — see §4.6 for the full provider-pivot history. |
 | Models in the graph | **Pydantic v2** | Single source of truth for `CandidateRecord`, `ConversationState`, `LLMExtraction` — used by validators, storage, and FastAPI request/response. |
 | Conversation state store | **SQLite** via `langgraph-checkpoint-sqlite` | Zero-config, one file, persists across container restarts when mounted on a volume. Swap to Postgres later without code changes (just a different `Saver`). |
 | Final candidate output | **JSON files** under `data/candidates/{qualified|disqualified|abandoned}/` | Trivial to inspect and hand to recruiters; not in a DB on purpose. |
@@ -69,7 +69,7 @@ sequenceDiagram
     participant G as LangGraph
     participant DB as SQLite checkpoint
     participant L as ChatOpenAI<br/>(langchain-openai)
-    participant GH as GitHub Models<br/>(HTTPS, OpenAI-compatible)
+    participant GH as LLM provider<br/>(Gemini / OpenAI-compatible)
     participant FS as data/* files
 
     C->>UI: types message
@@ -189,13 +189,16 @@ State carries a `reask_counts` dict. The validator node:
 
 The re-ask limit is enforced in code (in a conditional edge), not in the prompt — so the LLM can't accidentally loop forever.
 
-### 4.6 LLM client (GitHub Models via OpenAI-compatible endpoint)
+### 4.6 LLM client (Gemini via OpenAI-compatible endpoint)
 
-The LLM client is a thin `langchain-openai` `ChatOpenAI` instance (see [`api/llm.py`](../api/llm.py)) pointed at GitHub Models. Three env vars decide everything: `LLM_BASE_URL`, `MODEL_NAME`, `GITHUB_PAT`. The same code works with Gemini's OpenAI bridge, Groq, Ollama, or any internal OpenAI-compatible proxy — only env values change.
+The LLM client is a thin `langchain-openai` `ChatOpenAI` instance (see [`api/llm.py`](../api/llm.py)) pointed at **Google Gemini**'s OpenAI-compatible bridge (`https://generativelanguage.googleapis.com/v1beta/openai/`). Three env vars decide everything: `LLM_API_KEY`, `LLM_BASE_URL`, `MODEL_NAME`. The same code works with GitHub Models, Groq, Ollama, or any internal OpenAI-compatible proxy — only env values change.
 
-**PAT requirement.** GitHub Models distinguishes two permission levels: catalog-read (sees `/catalog/models`) and inference (can call `/chat/completions`). A read-only PAT will 403 on inference with `"The 'models' permission is required"`. Make sure the fine-grained PAT has the broader Models permission, or use a classic PAT.
+**Provider history (lessons learned).** We went through three providers before settling on Gemini:
 
-**Why not Copilot Chat?** We initially tried `api.githubcopilot.com` (Copilot Chat) and later the `github_copilot_sdk` wrapper that spawns the Copilot CLI binary. Both work *technically* but the Copilot CLI's underlying model has anti-jailbreak training that intermittently refuses non-coding roles, producing empty messages or "I'm Copilot, I can't take a different role" replies even with task-framed prompts. GitHub Models exposes the same base models *without* that persona layer, which is what we need.
+1. **Copilot Chat (`api.githubcopilot.com`) via raw PAT** — rejected: requires a session-token exchange, not direct PAT auth.
+2. **`github_copilot_sdk`** — works auth-wise, but the bundled Copilot CLI's underlying model has anti-jailbreak training that intermittently refuses non-coding roles ("I'm GitHub Copilot CLI, I can't take on a different role") even with task-framed prompts.
+3. **GitHub Models direct** — auth works, but the user's enterprise account doesn't have Models inference entitled (catalog reads return 200, `/chat/completions` returns 403 `no_access` on every model). Likely an org-level setting outside the user's control.
+4. **Gemini 2.0 Flash** — current. Free tier: 15 req/min, 1,500 req/day. Excellent multilingual (ES/EN). Key is instantly issued at <https://aistudio.google.com/apikey>.
 
 **Render fallback.** Free-tier endpoints can hiccup (rate limits, occasional empty bodies). The render path in [`api/nodes.py`](../api/nodes.py) uses `looks_like_refusal()` from [`api/prompts.py`](../api/prompts.py) to detect empty / off-topic responses and falls back to a deterministic per-stage question template in `STAGE_QUESTIONS`. The user never sees a blank message.
 

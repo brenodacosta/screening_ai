@@ -1,10 +1,10 @@
 """LLM client — thin wrapper around `langchain-openai`.
 
 The endpoint, model, and api_key all come from `.env` (see `api.config`).
-Default target is GitHub Models, but any OpenAI-compatible endpoint
-(Gemini's OpenAI bridge, Groq, Ollama, OpenRouter, internal proxy, ...) works
-with no code changes — just swap `LLM_BASE_URL`, `MODEL_NAME`, `GITHUB_PAT`
-in `.env`.
+Default target is Google Gemini via its OpenAI-compatible bridge, but any
+OpenAI-compatible endpoint (GitHub Models, Groq, Ollama, OpenRouter, internal
+proxy) works with no code changes — just swap `LLM_BASE_URL`, `MODEL_NAME`,
+`LLM_API_KEY` in `.env`.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ def get_llm(temperature: float = 0.3) -> ChatOpenAI:
     """
     return ChatOpenAI(
         model=settings.model_name,
-        api_key=settings.github_pat,
+        api_key=settings.llm_api_key,
         base_url=settings.llm_base_url,
         temperature=temperature,
         timeout=30,

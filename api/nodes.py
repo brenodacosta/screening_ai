@@ -201,8 +201,8 @@ def render_node(state: ConversationState) -> dict:
     # First turn: send the bilingual greeting deterministically (no LLM cost).
     if state.current_stage == Stage.GREETING and not state.transcript:
         text = (
-            "¡Hola! Gracias por tu interés en la vacante de repartidor de TastyExpress. "
-            "Hi! Thanks for your interest in the TastyExpress delivery driver role. "
+            "¡Hola! Gracias por tu interés en la vacante de repartidor de Grupos Sazón. "
+            "Hi! Thanks for your interest in the Grupos Sazón delivery driver role. "
             "¿Empezamos con unas preguntas rápidas? / Shall we start with a few quick questions?"
         )
         return _append_agent(state, text, source="template")
