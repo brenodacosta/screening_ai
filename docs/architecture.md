@@ -9,7 +9,7 @@
 The prototype is a two-service application packaged with Docker Compose:
 
 - **`ui`** — a Chainlit app that gives the candidate a chat-like UI in the browser. It is a thin client that holds no business logic.
-- **`api`** — a FastAPI app that hosts the LangGraph screening agent, talks to the LLM (GitHub Copilot via PAT), persists conversation state, and writes the final candidate JSON + logs.
+- **`api`** — a FastAPI app that hosts the LangGraph screening agent, talks to the LLM (Google Gemini via OpenAI-compatible bridge by default; swappable to any OpenAI-compatible provider), persists conversation state, and writes the final candidate JSON + logs.
 
 Splitting UI from agent now means the same `api` can later be reused by a real messaging adapter (Twilio SMS, WhatsApp Business, Telegram) without touching the agent code. For the prototype, Chainlit is the only adapter.
 
@@ -17,7 +17,7 @@ Splitting UI from agent now means the same `api` can later be reused by a real m
 flowchart LR
     Candidate(["Candidate<br/>browser"]) -->|WebSocket| UI["ui<br/>Chainlit"]
     UI -->|HTTP REST<br/>/conversations, /messages| API["api<br/>FastAPI + LangGraph"]
-    API -->|HTTPS<br/>OpenAI-compatible| LLM["GitHub Copilot<br/>(via PAT)"]
+    API -->|HTTPS<br/>OpenAI-compatible| LLM["LLM provider<br/>(Gemini by default)"]
     API -->|SQLite| CKPT[("checkpoints.db<br/>LangGraph state")]
     API -->|files| OUT[("data/candidates/*.json<br/>data/logs/*.jsonl<br/>data/notifications.jsonl")]
     API -->|read once at startup| JD[["jobs/delivery_driver.md"]]
@@ -48,10 +48,10 @@ flowchart LR
 | Logs | **JSONL files** under `data/logs/{conversation_id}.jsonl` — one line per node transition + LLM call | Easy to grep; replayable for evals. |
 | Recruiter notifications | **`data/notifications.jsonl`** (append-only) | Placeholder for a real webhook/email channel later. |
 | JD source | **Markdown with YAML front-matter** at `jobs/delivery_driver.md` | Parsed once at startup; service_areas list feeds Stage 3 validation. |
-| Config / secrets | **`.env`** + **`pydantic-settings`** | Single typed `Settings` object. `.env` gitignored. `COPILOT_PAT` passed to the `api` container via `env_file`. |
+| Config / secrets | **`.env`** + **`pydantic-settings`** | Single typed `Settings` object. `.env` gitignored. `LLM_API_KEY` passed to the `api` container via `env_file`. |
 | Tracing (optional) | **LangSmith** | Set `LANGSMITH_TRACING=1` and a key — no code changes needed for traces of every graph run. |
 | Testing | **pytest** + **pytest-asyncio** + **respx** (mock LLM) | Unit tests for validators, scenario tests for graph runs with mocked LLM responses. |
-| Packaging | **`uv`** or **`pip` + `requirements.txt`** | Recommend `uv` (fast, lock file); fall back to pip if you'd rather avoid a new tool. |
+| Packaging | **`pip` + `requirements.txt`** | Plain `pip` was chosen for simplicity and CI familiarity. Python 3.12 is required (3.13 lacks wheels for chainlit's transitive `numpy<2`). |
 | Containers | **Docker** + **docker-compose** | `ui` and `api` as separate services, one shared `data` volume. |
 
 ---
@@ -96,7 +96,7 @@ sequenceDiagram
     UI-->>C: display agent_text
 ```
 
-**Why one LLM call for extraction + sentiment + language detection per turn** — three sequential calls would triple latency and cost. The single call returns a JSON object covering all three, plus the chosen next agent message can be a second (and last) call if we want better wording control. We'll start with **one extract call + one render call per turn = 2 LLM calls/turn**.
+**LLM calls per turn:** the extraction call returns one JSON object covering fields, sentiment, language *and* whether the candidate asked a question. The render call composes the next agent message. **Baseline = 2 LLM calls/turn** (extract + render). When the candidate asks something — pay, perks, etc. — a third **Q&A** call answers from the JD (see §4.8), so those turns cost 3 LLM calls. The greeting turn is deterministic (0 LLM calls).
 
 ### 3.2 Conversation lifecycle
 
@@ -126,8 +126,9 @@ stateDiagram-v2
         At any stage:
         • Language switch → next reply in new language
         • Other language → reply once asking ES/EN
-        • Off-topic → brief answer, return to stage
-        • Inactivity 10 min → Abandoned
+        • Candidate question → JD-grounded answer + re-ask stage
+        • Inactivity (1st strike) → nudge re-asking current stage
+        • Inactivity (2nd strike) → Abandoned
     end note
 ```
 
@@ -170,14 +171,16 @@ This is the **only** source of truth. The agent reads/writes only this object; e
 
 ### 4.4 Inactivity handling (the "stops responding" case)
 
-Neither Chainlit nor LangGraph emit a "no reply in 10 minutes" event. We need a sweeper:
+Neither Chainlit nor LangGraph emit a "no reply in 10 minutes" event. We use a background sweeper plus an in-graph two-strike flow:
 
-- A background `asyncio` task in the `api` runs every 60 s.
-- It queries the SQLite checkpoint store for threads where `qualification_status == "in_progress"` and `now - last_user_ts > 10 min`.
-- For each, it advances the graph through the `Abandoned` terminal node, which writes the JSON output and logs the timeout.
-- No nudge message is sent (per the approved process design).
+- A background `asyncio` task in the `api` (`start_sweeper` in [`api/inactivity.py`](../api/inactivity.py)) runs every `INACTIVITY_SWEEP_INTERVAL_SECONDS` (default 60s).
+- It scans an in-memory `_last_activity` map for threads idle longer than `INACTIVITY_TIMEOUT_SECONDS` (default 10 min) and calls `handle_inactivity_event(conversation_id)` for each.
+- `handle_inactivity_event` consults `state.metadata["inactivity_nudges"]`:
+  - First strike → append a deterministic nudge re-asking the current stage question, increment counter to 1, reset the sweeper timer.
+  - Second strike → transition to `ABANDONED`, run `terminate_node` directly, write the candidate JSON, send the closing message.
+- The same function backs `POST /conversations/{id}/inactivity`, which the Chainlit **User inactivity** button calls — production and simulation share one code path.
 
-This keeps inactivity logic in one place (the `api`) instead of split between UI and agent.
+See §4.9 for the full nudge/terminate state semantics.
 
 ### 4.5 Invalid / ambiguous answers
 
@@ -279,12 +282,13 @@ Minimal, internal-only — Chainlit is the only client for now.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/conversations` | Create a new conversation. Returns `conversation_id` + the agent's greeting. |
-| `POST` | `/conversations/{id}/messages` | Send a user message. Returns the agent's reply + current `qualification_status`. |
+| `POST` | `/conversations` | Create a new conversation. Returns `conversation_id`, the agent's greeting, and a `source` flag (`"template"` for the deterministic greeting). |
+| `POST` | `/conversations/{id}/messages` | Send a user message. Returns the agent's reply + current `qualification_status` + `source` (`"llm"` or `"template"`). |
+| `POST` | `/conversations/{id}/inactivity` | Simulate one inactivity strike. First call → nudge (`source="template"`, status stays `in_progress`). Second call → terminate as `abandoned`. Used by the Chainlit **User inactivity** button. |
 | `GET` | `/conversations/{id}` | Get the current `ConversationState` (useful for tests / debugging). |
 | `GET` | `/healthz` | Liveness for docker-compose / k8s. |
 
-Chainlit's `@cl.on_chat_start` calls `POST /conversations`; `@cl.on_message` calls `POST /conversations/{id}/messages`.
+Chainlit's `@cl.on_chat_start` calls `POST /conversations`; `@cl.on_message` calls `POST /conversations/{id}/messages`; `@cl.action_callback("inactivity")` calls `POST /conversations/{id}/inactivity`.
 
 ---
 
@@ -295,7 +299,7 @@ Chainlit's `@cl.on_chat_start` calls `POST /conversations`; `@cl.on_message` cal
 services:
   api:
     build: ./api
-    env_file: .env           # COPILOT_PAT, MODEL_NAME, LANGSMITH_*, etc.
+    env_file: .env           # LLM_API_KEY, LLM_BASE_URL, MODEL_NAME, LANGSMITH_*, etc.
     volumes:
       - screening_data:/app/data
       - ./jobs:/app/jobs:ro  # JD markdown
@@ -316,7 +320,7 @@ volumes:
   screening_data:
 ```
 
-**Security note:** `COPILOT_PAT` is only injected into `api` — Chainlit never sees it.
+**Security note:** `LLM_API_KEY` is only injected into `api` — Chainlit never sees it.
 
 ---
 
@@ -347,14 +351,22 @@ volumes:
 
 ---
 
-## 11. Next Step
+## 11. Current state
 
-Once this architecture is approved, the build phase is:
+Built and verified end-to-end as of 2026-05-11:
 
-1. Scaffold repo (`api/`, `ui/`, `jobs/`, `tests/`, `data/`, `docker-compose.yml`, `.env.example`).
-2. Author `jobs/delivery_driver.md` with the 45 service-area cities.
-3. Implement the LangGraph state + nodes + edges, validators, and LLM client.
-4. Wire FastAPI endpoints + the inactivity sweeper.
-5. Wire Chainlit `on_chat_start` / `on_message` to the API.
-6. pytest scenarios + a small set of golden transcripts.
-7. `docker-compose up` and run end-to-end.
+- ✅ Repo scaffolded (`api/`, `ui/`, `jobs/`, `tests/`, `data/`, `docker-compose.yml`, `.env.example`).
+- ✅ `jobs/delivery_driver.md` with 45 service-area cities.
+- ✅ LangGraph state + nodes + edges, validators, OpenAI-compatible LLM client.
+- ✅ FastAPI endpoints (`/conversations`, `/messages`, `/inactivity`, `/healthz`, `GET /conversations/{id}`) + background inactivity sweeper.
+- ✅ Chainlit `on_chat_start` / `on_message` / **User inactivity** action button wired to the API.
+- ✅ Candidate Q&A grounded in the JD with prompt-injection defenses (§4.8).
+- ✅ Nudge-then-abandon inactivity flow shared between sweeper and simulation button (§4.9).
+- ✅ Author labels in Chainlit reflect message source (LLM vs template).
+- ✅ Deterministic pytest suite for JD loader, models, routing.
+
+Still to do:
+- LLM-driven scenario tests with mocked `ChatOpenAI` responses (§8).
+- Golden transcripts replayed in CI.
+- Real recruiter notification channel (webhook / email) instead of `notifications.jsonl`.
+- Hardening for production: encrypted PII at rest, per-conversation rate limits, auth on the API.
