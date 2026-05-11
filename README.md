@@ -83,7 +83,7 @@ screening_ai/
 
 ```powershell
 # 1. Get the code
-git clone <your-fork-or-this-repo>.git
+git clone git@github.com:brenodacosta/screening_ai.git
 cd screening_ai
 
 # 2. Configure
@@ -116,7 +116,7 @@ Open <http://127.0.0.1:8001> in your browser.
 
 ```bash
 # 1. Get the code
-git clone <your-fork-or-this-repo>.git
+git clone git@github.com:brenodacosta/screening_ai.git
 cd screening_ai
 
 # 2. Configure
@@ -186,17 +186,35 @@ reference. The three you'll likely touch:
 |---|---|---|
 | `LLM_API_KEY` | (empty) | Google Gemini key, or any OpenAI-compatible provider key |
 | `LLM_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta/openai/` | Swap to GitHub Models, Groq, Ollama, etc. |
-| `MODEL_NAME` | `gemini-2.0-flash` | Model id for whatever endpoint `LLM_BASE_URL` points at |
+| `MODEL_NAME` | `gemini-2.5-flash` | Model id for whatever endpoint `LLM_BASE_URL` points at |
 
 `INACTIVITY_TIMEOUT_SECONDS` controls the real 10-min nudge/abandon sweeper.
 Lower it (e.g. `30`) to test the inactivity flow without waiting.
 
 ---
 
+## Dashboard
+
+Aggregated metrics over every terminal candidate JSON on disk, computed
+on-demand per request (no cache, no background recompute — just point the
+endpoint at `data/candidates/`):
+
+- `GET /dashboard` — self-contained HTML page with Plotly charts (loads
+  Plotly from a public CDN; charts won't render fully offline).
+- `GET /dashboard/metrics` — same data as JSON. Both accept an optional
+  `?job_id=` filter; omit to aggregate across all jobs.
+
+Metrics: totals per status, completion rate, drop-off by stage,
+average duration (overall + per status), disqualification reason
+breakdown, 7-stage funnel, LLM-vs-Template message ratio, and daily
+throughput. Open <http://127.0.0.1:8000/dashboard> after starting the API.
+
+---
+
 ## LLM backend
 
 We use `langchain-openai`'s `ChatOpenAI` wired up in [api/llm.py](api/llm.py)
-against an OpenAI-compatible endpoint. Default target: **Google Gemini 2.0
+against an OpenAI-compatible endpoint. Default target: **Google Gemini 2.5
 Flash** via Gemini's OpenAI bridge. Three env vars decide everything:
 `LLM_API_KEY`, `LLM_BASE_URL`, `MODEL_NAME`. Zero code changes to swap
 providers (GitHub Models, Groq, Ollama, OpenRouter, an internal proxy).
