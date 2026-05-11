@@ -1,0 +1,38 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    container_name: screening_api
+    env_file: .env
+    environment:
+      DATA_DIR: /app/data
+      JD_PATH: /app/jobs/delivery_driver.md
+      CHECKPOINT_DB_PATH: /app/data/checkpoints.db
+    volumes:
+      - screening_data:/app/data
+      - ./jobs:/app/jobs:ro
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  ui:
+    build:
+      context: .
+      dockerfile: ui/Dockerfile
+    container_name: screening_ui
+    environment:
+      API_BASE_URL: http://api:8000
+    ports:
+      - "8001:8000"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  screening_data:

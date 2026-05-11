@@ -1,0 +1,9 @@
+INFO:     127.0.0.1:59224 - "POST /conversations HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59224 - "POST /conversations/8b5bef83-568c-4164-9d66-39490c657d2e/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59224 - "GET /conversations/8b5bef83-568c-4164-9d66-39490c657d2e HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51669 - "GET / HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:51669 - "GET /favicon.ico HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53158 - "POST /conversations HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51349 - "POST /conversations HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64816 - "POST /conversations/6e81dcd6-4d90-4ec3-8eff-acf6c4c6c29d/messages HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50152 - "POST /conversations HTTP/1.1" 200 OK

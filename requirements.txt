@@ -1,0 +1,29 @@
+# --- Agent / flow ---
+langgraph>=0.2.50,<0.3
+langgraph-checkpoint-sqlite>=2.0.1,<3
+langchain>=0.3.7,<0.4
+
+# --- LLM client ---
+# OpenAI-compatible client used against GitHub Models (or any compatible
+# provider) via `base_url` + `api_key`.
+langchain-openai>=0.2.8,<0.3
+
+# --- Backend ---
+# fastapi / uvicorn / python-multipart are pulled in by chainlit with strict pins;
+# we don't pin them here so pip can resolve a single coherent set.
+httpx
+
+# --- Frontend ---
+# 2.0+ avoids a pydantic 2.10+ dataclass-rebuild bug present in 1.3.x.
+chainlit>=2.0,<3
+
+# --- Config / schemas / IO ---
+pydantic>=2.9.0,<3
+pydantic-settings>=2.6.0,<3
+python-dotenv>=1.0.1,<2
+PyYAML>=6.0.2,<7
+
+# --- Tests (kept in main file for prototype simplicity) ---
+pytest>=8.3.0,<9
+pytest-asyncio>=0.24.0,<0.25
+respx>=0.21.1,<0.22
