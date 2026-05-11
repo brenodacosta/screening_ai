@@ -146,12 +146,23 @@ def extract_node(state: ConversationState) -> dict:
     # of what extraction returns. The candidate is clearly still engaged.
     base_meta = {**state.metadata, "inactivity_nudges": 0}
 
+    # Disambiguation context: short replies like "no" / "sí" are meaningless
+    # without knowing which question they answer. Feed the extractor the most
+    # recent agent message + the stage we're currently asking about.
+    prior_agent = _latest_agent_text(state)
+    stage_value = state.current_stage.value
+    user_payload = (
+        f"PRIOR_AGENT_QUESTION: {prior_agent or '(none — first user turn)'}\n"
+        f"CURRENT_STAGE: {stage_value}\n"
+        f"USER_MESSAGE: {user_text}"
+    )
+
     llm = get_llm(temperature=0)
     raw = ""
     try:
         resp = llm.invoke([
             SystemMessage(content=EXTRACTION_SYSTEM),
-            HumanMessage(content=user_text),
+            HumanMessage(content=user_payload),
         ])
         raw = resp.content if isinstance(resp.content, str) else str(resp.content)
         data = _safe_json(raw)
@@ -424,6 +435,15 @@ def terminate_node(state: ConversationState) -> dict:
 def _latest_user_text(state: ConversationState) -> Optional[str]:
     for t in reversed(state.transcript):
         if t.role == "user":
+            return t.text
+    return None
+
+
+def _latest_agent_text(state: ConversationState) -> Optional[str]:
+    """Most recent agent turn text — used as disambiguation context for the
+    extractor so single-word user replies can be mapped to the right field."""
+    for t in reversed(state.transcript):
+        if t.role == "agent":
             return t.text
     return None
 

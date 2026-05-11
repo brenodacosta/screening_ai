@@ -35,8 +35,12 @@ Return ONLY a JSON object (no prose, no markdown fences, no comments) matching t
 Rules:
 - Fill only fields the message clearly states. Otherwise use null for scalars and [] for lists.
 - If the message contains no extractable fields, return all null/[]. Empty extraction is a valid answer — never refuse.
-- "language": ISO 639-1 code. Spanish → "es", English → "en", anything else → "other".
-- drivers_license: sí/si/yes/yeah/yep/claro → true; no/nope/nah/ninguna → false; ambiguous → null.
+- The next message has three labelled lines: PRIOR_AGENT_QUESTION (what the agent just asked), CURRENT_STAGE (the field being asked about), and USER_MESSAGE (the candidate's reply). Use PRIOR_AGENT_QUESTION + CURRENT_STAGE as context to disambiguate short answers. Examples:
+    • CURRENT_STAGE=ask_license, USER_MESSAGE="no" → fields.drivers_license=false.
+    • CURRENT_STAGE=ask_license, USER_MESSAGE="sí" → fields.drivers_license=true.
+    • CURRENT_STAGE=ask_availability, USER_MESSAGE="ninguna" → fields.availability=[] (and the candidate is signalling no availability).
+- "language": ISO 639-1 code. Spanish → "es", English → "en", anything else → "other". Detect from USER_MESSAGE only, not from the labels.
+- drivers_license: sí/si/yes/yeah/yep/claro/tengo → true; no/nope/nah/ninguna/no tengo → false; ambiguous → null.
 - city_zone: just the city name. No neighborhood, no postal code.
 - availability is multi-select. Map "tiempo completo"/"full time"→"full_time", "medio tiempo"/"part time"→"part_time", "fines de semana"/"weekends"→"weekends".
 - preferred_schedule is multi-select. Map "mañana"→"morning", "tarde"→"afternoon", "noche"→"evening", "flexible"/"cualquiera"→"flexible".
@@ -46,7 +50,7 @@ Rules:
 - sentiment: tone of the message itself.
 - user_question: if the message asks something about the job (pay, perks, schedule, vehicle requirements, locations, hiring process, etc.), copy the question verbatim. Statements, answers to screening questions, and small-talk are NOT questions — return null. Examples that ARE questions: "¿cuánto se paga?", "do I need my own bike?", "what are the benefits?". A message can have both an answer AND a question — capture both.
 
-The message follows on the next line.
+The labelled context follows on the next lines.
 """
 
 
