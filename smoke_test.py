@@ -23,17 +23,17 @@ def main() -> int:
     from api.config import settings  # noqa: PLC0415 (intentional after chdir)
     from api.llm import get_llm  # noqa: PLC0415
 
-    pat = settings.github_pat or ""
+    key = settings.llm_api_key or ""
     print("=== screening_ai smoke test ===")
     print(f"Base URL : {settings.llm_base_url}")
     print(f"Model    : {settings.model_name}")
-    print(f"PAT set  : {bool(pat) and pat != 'replace-me'}")
-    print(f"PAT len  : {len(pat)}")
-    print(f"PAT prefix: {pat[:10] + '...' if len(pat) > 10 else '(too short)'}")
+    print(f"Key set  : {bool(key) and key != 'replace-me'}")
+    print(f"Key len  : {len(key)}")
+    print(f"Key prefix: {key[:10] + '...' if len(key) > 10 else '(too short)'}")
     print()
 
-    if not pat or pat == "replace-me":
-        print("FAIL: GITHUB_PAT is not set. Edit .env and retry.")
+    if not key or key == "replace-me":
+        print("FAIL: LLM_API_KEY is not set. Edit .env and retry.")
         return 1
 
     from api.llm import shutdown_llm  # noqa: PLC0415
