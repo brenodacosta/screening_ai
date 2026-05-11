@@ -1,7 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "PowerShell(Write-Output \"=== User PATH \\(persistent\\) ===\"; [Environment]::GetEnvironmentVariable\\(\"Path\", \"User\"\\) -split ';'; Write-Output \"\"; Write-Output \"=== Machine PATH \\(persistent\\) ===\"; [Environment]::GetEnvironmentVariable\\(\"Path\", \"Machine\"\\) -split ';' | Where-Object { $_ -match 'git|github|cli' }; Write-Output \"\"; Write-Output \"=== git.exe search ===\"; @\\(\"C:\\\\Program Files\\\\Git\\\\cmd\\\\git.exe\", \"C:\\\\Program Files \\(x86\\)\\\\Git\\\\cmd\\\\git.exe\", \"$env:LOCALAPPDATA\\\\Programs\\\\Git\\\\cmd\\\\git.exe\", \"$env:LOCALAPPDATA\\\\Programs\\\\Git\\\\bin\\\\git.exe\", \"$env:LOCALAPPDATA\\\\Programs\\\\Git\\\\mingw64\\\\bin\\\\git.exe\"\\) | ForEach-Object { \"$_  -> $\\(Test-Path $_\\)\" })"
-    ]
-  }
-}
